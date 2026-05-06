@@ -1,4 +1,4 @@
-# TechKraft DevOps Assessment — Consolidated Submission (v2)
+# TechKraft DevOps Assessment — Consolidated Submission
 
 This revision consolidates the full assessment into a cohesive, production-grade response. It addresses prior gaps including the `config.json` requirement, hybrid connectivity to on-prem (pfSense), an ALB-fronted Auto Scaling Group, and team mentorship strategy.
 
