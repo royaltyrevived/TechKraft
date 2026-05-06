@@ -11,7 +11,7 @@
 
 ---
 
-## Part 1: Infrastructure as Code (`part1-terraform/main.tf`)
+## Part 1: Infrastructure as Code (`main.tf`)
 
 Production-grade VPC architecture with Public/Private subnet separation, NAT Gateway egress for private instances, and an Auto Scaling Group (ASG) behind an Application Load Balancer (ALB).
 
@@ -117,7 +117,7 @@ resource "aws_db_instance" "mysql" {
 
 ---
 
-## Part 2: Linux & Docker (`part2-linux/`)
+## Part 2: Linux & Docker 
 
 ### Multi-stage Dockerfile (`Dockerfile`)
 
@@ -145,7 +145,7 @@ CMD ["python", "app.py"]
 
 ---
 
-## Part 3: Python Scripting (`part3-python/ec2_monitor.py`)
+## Part 3: Python Scripting (`ec2_monitor.py`)
 
 Reads runtime configuration from `config.json`, with CLI flags overriding config defaults. Outputs a JSON report with per-instance CPU averages and threshold-breach alerts.
 
@@ -199,7 +199,7 @@ if __name__ == "__main__":
 
 ---
 
-## Part 4: Bash Scripting (`part4-bash/analyze_nginx_logs.sh`)
+## Part 4: Bash Scripting (`analyze_nginx_logs.sh`)
 
 Reports total requests, 4xx/5xx error rates with division-by-zero protection, and the Top 10 IPs and Endpoints.
 
