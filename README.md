@@ -1,43 +1,26 @@
-# TechKraft DevOps Assessment
+# TechKraft DevOps Assessment — Consolidated Submission (v2)
 
-This repository contains the solution for the TechKraft DevOps assessment, covering infrastructure refactoring, Linux/Docker hardening, automation scripting, DNS redundancy design, and CI/CD pipeline review.
+This revision consolidates the full assessment into a cohesive, production-grade response. It addresses prior gaps including the `config.json` requirement, hybrid connectivity to on-prem (pfSense), an ALB-fronted Auto Scaling Group, and team mentorship strategy.
 
 ## Table of Contents
 
-- [Part 1: Infrastructure Analysis & Refactored IaC](#part-1-infrastructure-analysis--refactored-iac)
-- [Part 2: Linux & Docker](#part-2-linux--docker)
-- [Part 3: Python Scripting](#part-3-python-scripting)
-- [Part 4: Bash Scripting](#part-4-bash-scripting)
+- [Part 1: Infrastructure as Code](#part-1-infrastructure-as-code-part1-terraformmaintf)
+- [Part 2: Linux & Docker](#part-2-linux--docker-part2-linux)
+- [Part 3: Python Scripting](#part-3-python-scripting-part3-pythonec2_monitorpy)
+- [Part 4: Bash Scripting](#part-4-bash-scripting-part4-bashanalyze_nginx_logssh)
 - [Part 5: Redundant DNS Design](#part-5-redundant-dns-design)
-- [Part 6: CI/CD Pipeline Review](#part-6-cicd-pipeline-review)
+- [Part 6: CI/CD & Mentorship](#part-6-cicd--mentorship-the-senior-hire-readme)
 
 ---
 
-## Part 1: Infrastructure Analysis & Refactored IaC
+## Part 1: Infrastructure as Code (`part1-terraform/main.tf`)
 
-### 1. Analysis
-
-**Security Issues**
-- Hardcoded RDS credentials.
-- Overly permissive ingress (SSH/HTTP open to `0.0.0.0/0`).
-- Public subnets only — no private tier for the database.
-- Missing storage encryption.
-- Missing deletion protection.
-- No backup retention configured.
-
-**Architectural Issues**
-- RDS is a Single Point of Failure (no Multi-AZ).
-- Manual EC2 scaling using `count` instead of an Auto Scaling Group.
-- No Load Balancer for traffic distribution.
-- Hardcoded Availability Zones.
-- No remote state backend for Terraform.
-
-### 2. Refactored Terraform (`part1-terraform/main.tf`)
-
-The refactored code implements a Public/Private VPC architecture with a NAT Gateway so private instances can fetch updates while remaining unreachable from the internet.
+Production-grade VPC architecture with Public/Private subnet separation, NAT Gateway egress for private instances, and an Auto Scaling Group (ASG) behind an Application Load Balancer (ALB).
 
 ```hcl
-# --- VPC and Networking ---
+# --- Provider & Network Setup ---
+provider "aws" { region = "us-east-1" }
+
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
@@ -47,7 +30,6 @@ resource "aws_vpc" "main" {
 
 data "aws_availability_zones" "available" { state = "available" }
 
-# Public Subnets (for ALB & NAT Gateway)
 resource "aws_subnet" "public" {
   count                   = 2
   vpc_id                  = aws_vpc.main.id
@@ -56,7 +38,6 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
 }
 
-# Private Subnets (for App & DB)
 resource "aws_subnet" "private" {
   count             = 2
   vpc_id            = aws_vpc.main.id
@@ -86,12 +67,35 @@ resource "aws_security_group" "app_sg" {
     from_port       = 80
     to_port         = 80
     protocol        = "tcp"
-    security_groups = [aws_security_group.alb_sg.id] # Least Privilege
+    security_groups = [aws_security_group.alb_sg.id]
   }
   egress { from_port = 0; to_port = 0; protocol = "-1"; cidr_blocks = ["0.0.0.0/0"] }
 }
 
-# --- Database Refactor ---
+# --- Compute & Load Balancing ---
+resource "aws_lb" "web" {
+  name               = "techkraft-alb"
+  load_balancer_type = "application"
+  subnets            = aws_subnet.public[*].id
+  security_groups    = [aws_security_group.alb_sg.id]
+}
+
+resource "aws_launch_template" "web" {
+  name_prefix   = "techkraft-web-"
+  image_id      = "ami-0c55b159cbfafe1f0"
+  instance_type = "t3.medium"
+  network_interfaces { security_groups = [aws_security_group.app_sg.id] }
+}
+
+resource "aws_autoscaling_group" "web" {
+  desired_capacity    = 3
+  max_size            = 5
+  min_size            = 2
+  vpc_zone_identifier = aws_subnet.private[*].id
+  launch_template { id = aws_launch_template.web.id; version = "$Latest" }
+}
+
+# --- RDS Database (Multi-AZ & Encrypted) ---
 resource "aws_db_subnet_group" "main" {
   name       = "techkraft-db-sn-group"
   subnet_ids = aws_subnet.private[*].id
@@ -103,9 +107,9 @@ resource "aws_db_instance" "mysql" {
   instance_class              = "db.t3.medium"
   allocated_storage           = 20
   db_subnet_group_name        = aws_db_subnet_group.main.name
-  multi_az                    = true # Solves SPOF
-  storage_encrypted           = true # Compliance fix
-  manage_master_user_password = true # Secrets Manager integration
+  multi_az                    = true
+  storage_encrypted           = true
+  manage_master_user_password = true # AWS Secrets Manager
   vpc_security_group_ids      = [aws_security_group.app_sg.id]
   deletion_protection         = true
   backup_retention_period     = 7
@@ -115,31 +119,21 @@ resource "aws_db_instance" "mysql" {
 
 ---
 
-## Part 2: Linux & Docker
+## Part 2: Linux & Docker (`part2-linux/`)
 
-### 1. Troubleshooting (`troubleshooting.md`)
+### Multi-stage Dockerfile (`Dockerfile`)
 
-Structured escalation for diagnosing host `10.0.1.50`:
-
-1. **Network**: `ping -c 4 10.0.1.50` and `nc -zv 10.0.1.50 22`.
-2. **Service**: Access via AWS Serial Console; run `systemctl status ssh` and `ss -tulpn | grep :22`.
-3. **Access Issues**: Check Security Group ingress, host `/etc/hosts.deny`, or filesystem corruption preventing SSH key reads.
-4. **Resources**: `htop` for CPU/RAM; `df -h` and `iostat` for disk/IO bottlenecks.
-5. **Logs**: `journalctl -xe` and `tail -f /var/log/auth.log` for failed login attempts.
-
-### 2. Multi-stage Dockerfile
-
-**Fix:** Unified the base image to `python:3.11-slim` to ensure binary compatibility (avoiding `glibc` vs `musl` conflicts when copying compiled Python packages between stages).
+`slim → slim` base image alignment ensures binary compatibility for compiled Python packages copied between stages.
 
 ```dockerfile
-# Stage 1: Build dependencies
+# Stage 1: Build
 FROM python:3.11-slim AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends gcc python3-dev
 COPY requirements.txt .
 RUN pip install --user --no-cache-dir -r requirements.txt
 
-# Stage 2: Runtime
+# Stage 2: Production (slim → slim for binary compatibility)
 FROM python:3.11-slim
 RUN groupadd -r techkraft && useradd -r -g techkraft techuser
 WORKDIR /app
@@ -153,76 +147,73 @@ CMD ["python", "app.py"]
 
 ---
 
-## Part 3: Python Scripting (`ec2_monitor.py`)
+## Part 3: Python Scripting (`part3-python/ec2_monitor.py`)
 
-Lists running EC2 instances, queries CloudWatch CPU metrics, and flags hosts breaching the configured threshold. Uses structured logging and explicit error handling.
+Reads runtime configuration from `config.json`, with CLI flags overriding config defaults. Outputs a JSON report with per-instance CPU averages and threshold-breach alerts.
 
 ```python
-import boto3
-import json
-import argparse
-import logging
+import boto3, json, argparse, logging
 from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-def get_instance_report(region: str, threshold: int):
+def load_config(path='config.json'):
     try:
-        ec2 = boto3.resource('ec2', region_name=region)
-        cw = boto3.client('cloudwatch', region_name=region)
-        report = []
+        with open(path, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        logger.error("config.json not found")
+        return {"alert_threshold": 80, "regions": ["us-east-1"]}
 
-        instances = ec2.instances.filter(
-            Filters=[{'Name': 'instance-state-name', 'Values': ['running']}]
-        )
+def monitor(region, threshold, output):
+    ec2 = boto3.resource('ec2', region_name=region)
+    cw = boto3.client('cloudwatch', region_name=region)
+    report = []
 
-        for inst in instances:
-            name = next((t['Value'] for t in inst.tags if t['Key'] == 'Name'), 'Unnamed')
-
-            response = cw.get_metric_statistics(
-                Namespace='AWS/EC2',
-                MetricName='CPUUtilization',
+    try:
+        for inst in ec2.instances.filter(Filters=[{'Name': 'instance-state-name', 'Values': ['running']}]):
+            res = cw.get_metric_statistics(
+                Namespace='AWS/EC2', MetricName='CPUUtilization',
                 Dimensions=[{'Name': 'InstanceId', 'Value': inst.id}],
-                StartTime=datetime.utcnow() - timedelta(hours=1),
-                EndTime=datetime.utcnow(),
-                Period=300,
-                Statistics=['Average', 'Minimum', 'Maximum']
+                StartTime=datetime.utcnow()-timedelta(hours=1), EndTime=datetime.utcnow(),
+                Period=300, Statistics=['Average']
             )
+            pts = res.get('Datapoints', [])
+            avg = sum(p['Average'] for p in pts) / len(pts) if pts else 0
+            report.append({"InstanceId": inst.id, "AvgCPU": round(avg, 2), "Alert": avg > threshold})
 
-            points = response.get('Datapoints', [])
-            if points:
-                avg = sum(p['Average'] for p in points) / len(points)
-                report.append({
-                    "InstanceId": inst.id,
-                    "Name": name,
-                    "Type": inst.instance_type,
-                    "AvgCPU": round(avg, 2),
-                    "Alert": avg > threshold
-                })
-        return report
+        with open(output, 'w') as f:
+            json.dump(report, f, indent=4)
+        logger.info(f"Report saved to {output}")
     except Exception as e:
-        logger.error(f"Failed to fetch metrics: {e}")
-        return []
+        logger.error(f"AWS Error: {e}")
+
+if __name__ == "__main__":
+    conf = load_config()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--region", default=conf['regions'][0])
+    parser.add_argument("--threshold", type=int, default=conf['alert_threshold'])
+    parser.add_argument("--output", default="report.json")
+    args = parser.parse_args()
+    monitor(args.region, args.threshold, args.output)
 ```
 
 ---
 
-## Part 4: Bash Scripting (`analyze_nginx_logs.sh`)
+## Part 4: Bash Scripting (`part4-bash/analyze_nginx_logs.sh`)
 
-Robust nginx access log parser with division-by-zero protection and aligned output.
+Reports total requests, 4xx/5xx error rates with division-by-zero protection, and the Top 10 IPs and Endpoints.
 
 ```bash
 #!/bin/bash
 LOG_FILE=$1
-[[ ! -f "$LOG_FILE" ]] && echo "Log file not found" && exit 1
+[[ ! -f "$LOG_FILE" ]] && echo "Log not found" && exit 1
 
 TOTAL=$(wc -l < "$LOG_FILE")
-[[ "$TOTAL" -eq 0 ]] && echo "Log file is empty" && exit 0
+[[ "$TOTAL" -eq 0 ]] && echo "Log is empty" && exit 0
 
-calc_pct() {
-  awk -v n="$1" -v t="$TOTAL" 'BEGIN { printf "%.2f", (n/t)*100 }'
-}
+calc_pct() { awk -v n="$1" -v t="$TOTAL" 'BEGIN {printf "%.2f", (n/t)*100}'; }
 
 ERR_4XX=$(awk '$9 ~ /^4/ {c++} END {print c+0}' "$LOG_FILE")
 ERR_5XX=$(awk '$9 ~ /^5/ {c++} END {print c+0}' "$LOG_FILE")
@@ -231,35 +222,40 @@ echo "=== Nginx Log Analysis Report ==="
 echo "Total Requests: $TOTAL"
 echo "4xx Errors: $ERR_4XX ($(calc_pct "$ERR_4XX")%)"
 echo "5xx Errors: $ERR_5XX ($(calc_pct "$ERR_5XX")%)"
+
 echo -e "\nTop 10 IPs:"
 awk '{print $1}' "$LOG_FILE" | sort | uniq -c | sort -nr | head -10
+
+echo -e "\nTop 10 Endpoints:"
+awk '{print $7}' "$LOG_FILE" | sort | uniq -c | sort -nr | head -10
 ```
 
 ---
 
 ## Part 5: Redundant DNS Design
 
-Replace the existing Unbound-on-EC2 SPOF with **AWS Route 53** as a managed, redundant resolver layer.
+To eliminate the SPOF of the single Unbound EC2 instance:
 
-- **Routing Policy:** Latency-Based Routing targeting **ap-south-1 (Mumbai)** for Nepal-based users, with **ap-southeast-1 (Singapore)** as a secondary region.
-- **Failover:** Route 53 Health Checks monitor the primary ALB. On failure, DNS flips to a static maintenance page on S3 or to the secondary region's ALB.
-- **Cost Estimate:** ~$0.50/hosted zone + ~$0.50/health check ≈ **$1.00/month** baseline.
-- **Migration Window:** 2–3 hours including cutover and validation.
+- **Migration:** Move DNS to **AWS Route 53** (managed, multi-region anycast).
+- **Latency:** **Latency-Based Routing** targeting `ap-south-1` (Mumbai) to minimize lag for Nepal-based users, with `ap-southeast-1` (Singapore) as a secondary.
+- **Failover:** **Route 53 Health Checks** on the ALB; on failure, automatic flip to a secondary region or an S3-hosted maintenance page.
+- **Hybrid Connectivity:** Connect the on-prem **pfSense** firewall to the AWS VPC via a **Site-to-Site VPN** for secure cross-environment communication (with Direct Connect as a future upgrade path for bandwidth-sensitive workloads).
 
 ---
 
-## Part 6: CI/CD Pipeline Review
+## Part 6: CI/CD & Mentorship (The "Senior Hire" README)
 
-### 1. Problems Identified
+### Pipeline Gaps & Fixes
 
-- **No Approval Gate:** Deploys to production automatically on every push to `main`.
-- **Security Risk:** No secret masking or scanning for hardcoded credentials.
-- **No Artifact Versioning:** Uses `rsync` directly instead of building a versioned Docker image or package.
-- **No Rollback Strategy:** If `rsync` fails or code is buggy, there is no automated way to revert.
+- **Problems:** Direct `rsync` deployment without approval gates, security scanning, or artifact versioning; no rollback path.
+- **Improvements:**
+  - Integrate **Trivy** for container scans and **tflint / checkov** for IaC.
+  - Implement **GitHub Environments** with mandatory manual approvals for production.
+  - Use **Blue/Green deployments** (CodeDeploy or Kubernetes) to enable instant rollback.
+  - Build and push **versioned Docker images** as the deployable artifact instead of rsync-ing source.
 
-### 2. Proposed Improvements
+### Mentorship Strategy (For the team of 11)
 
-- **Security Scanning:** Integrate `Trivy` for container image scans and `tflint` / `checkov` for IaC.
-- **Environment Promotion:** `main` branch deploys to Staging; tagging a release (e.g., `v1.0.0`) triggers Production.
-- **Approval Gate:** Use GitHub Environments with "Required Reviewers" for Production.
-- **Blue/Green Deployment:** Use AWS CodeDeploy or Kubernetes rolling/blue-green strategies for zero-downtime deploys and instant rollback.
+- **Standardization:** Develop modular, opinionated Terraform templates so the team deploys secure, pre-approved infrastructure by default — guardrails over gates.
+- **Observability:** Establish **CloudWatch Dashboards** and centralized logging (CloudWatch Logs / OpenSearch) to shift the team from reactive fire-fighting to proactive monitoring with SLOs.
+- **Culture:** Mandatory peer review on all IaC changes, paired with bi-weekly "Tech Talks" covering automated testing, security scanning, and incident retrospectives. Goal: distribute ownership so no single engineer is a SPOF for the platform.
