@@ -241,7 +241,7 @@ To eliminate the SPOF of the single Unbound EC2 instance:
 
 ---
 
-## Part 6: CI/CD & Mentorship (The "Senior Hire" README)
+## Part 6: CI/CD & Mentorship 
 
 ### Pipeline Gaps & Fixes
 
