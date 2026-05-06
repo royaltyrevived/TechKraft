@@ -1,7 +1,4 @@
 # TechKraft Senior Infrastructure Engineer Assignment
-**Candidate:** [Your Name]
-[cite_start]**Total Time Allotted:** 150 Minutes [cite: 3]
-[cite_start]**Total Time Spent:** ~140 Minutes [cite: 271]
 
 ## 1. Infrastructure Analysis (Part 1)
 [cite_start]I reviewed the provided Terraform configuration and identified several critical gaps preventing it from being production-ready[cite: 36, 129].
