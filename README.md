@@ -1,7 +1,5 @@
 # TechKraft DevOps Assessment — Consolidated Submission
 
-This revision consolidates the full assessment into a cohesive, production-grade response. It addresses prior gaps including the `config.json` requirement, hybrid connectivity to on-prem (pfSense), an ALB-fronted Auto Scaling Group, and team mentorship strategy.
-
 ## Table of Contents
 
 - [Part 1: Infrastructure as Code](#part-1-infrastructure-as-code-part1-terraformmaintf)
