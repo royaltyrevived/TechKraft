@@ -1,4 +1,4 @@
-# --- Provider & Network Setup ---
+# --- Provider & VPC ---
 provider "aws" { region = "us-east-1" }
 
 resource "aws_vpc" "main" {
@@ -10,6 +10,7 @@ resource "aws_vpc" "main" {
 
 data "aws_availability_zones" "available" { state = "available" }
 
+# Public Subnets (ALB & NAT Gateway)
 resource "aws_subnet" "public" {
   count                   = 2
   vpc_id                  = aws_vpc.main.id
@@ -18,6 +19,7 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
 }
 
+# Private Subnets (App & DB)
 resource "aws_subnet" "private" {
   count             = 2
   vpc_id            = aws_vpc.main.id
@@ -25,73 +27,64 @@ resource "aws_subnet" "private" {
   availability_zone = data.aws_availability_zones.available.names[count.index]
 }
 
-# NAT Gateway for Private Subnet Internet Access
+# NAT Gateway for Private Subnet Updates
 resource "aws_eip" "nat" { domain = "vpc" }
 resource "aws_nat_gateway" "main" {
   allocation_id = aws_eip.nat.id
   subnet_id     = aws_subnet.public[0].id
 }
 
-# --- Security Groups (Least Privilege) ---
+# --- Security Groups ---
 resource "aws_security_group" "alb_sg" {
-  name   = "alb-sg"
+  name = "alb-sg"
   vpc_id = aws_vpc.main.id
   ingress { from_port = 80; to_port = 80; protocol = "tcp"; cidr_blocks = ["0.0.0.0/0"] }
-  egress  { from_port = 0; to_port = 0; protocol = "-1"; cidr_blocks = ["0.0.0.0/0"] }
+  egress { from_port = 0; to_port = 0; protocol = "-1"; cidr_blocks = ["0.0.0.0/0"] }
 }
 
 resource "aws_security_group" "app_sg" {
-  name   = "app-sg"
+  name = "app-sg"
   vpc_id = aws_vpc.main.id
   ingress { 
-    from_port       = 80
-    to_port         = 80
-    protocol        = "tcp"
+    from_port = 80; to_port = 80; protocol = "tcp"; 
     security_groups = [aws_security_group.alb_sg.id] 
   }
   egress { from_port = 0; to_port = 0; protocol = "-1"; cidr_blocks = ["0.0.0.0/0"] }
 }
 
-# --- Compute & Load Balancing ---
+# --- Load Balancing & Scaling ---
 resource "aws_lb" "web" {
-  name               = "techkraft-alb"
+  name = "techkraft-alb"
   load_balancer_type = "application"
-  subnets            = aws_subnet.public[*].id
-  security_groups    = [aws_security_group.alb_sg.id]
-}
-
-resource "aws_launch_template" "web" {
-  name_prefix   = "techkraft-web-"
-  image_id      = "ami-0c55b159cbfafe1f0"
-  instance_type = "t3.medium"
-  network_interfaces { security_groups = [aws_security_group.app_sg.id] }
+  subnets = aws_subnet.public[*].id
+  security_groups = [aws_security_group.alb_sg.id]
 }
 
 resource "aws_autoscaling_group" "web" {
-  desired_capacity    = 3
-  max_size            = 5
-  min_size            = 2
+  desired_capacity = 3 [cite: 60]
+  max_size = 5
+  min_size = 2
   vpc_zone_identifier = aws_subnet.private[*].id
   launch_template { id = aws_launch_template.web.id; version = "$Latest" }
 }
 
-# --- RDS Database (Multi-AZ & Encrypted) ---
+# --- RDS Multi-AZ & Encrypted ---
 resource "aws_db_subnet_group" "main" {
-  name       = "techkraft-db-sn-group"
+  name = "db-sn-group"
   subnet_ids = aws_subnet.private[*].id
 }
 
 resource "aws_db_instance" "mysql" {
-  identifier              = "techkraft-db"
-  engine                  = "mysql"
-  instance_class          = "db.t3.medium"
-  allocated_storage       = 20
-  db_subnet_group_name    = aws_db_subnet_group.main.name
-  multi_az                = true
-  storage_encrypted       = true
-  manage_master_user_password = true # AWS Secrets Manager
-  vpc_security_group_ids  = [aws_security_group.app_sg.id]
-  deletion_protection     = true
+  identifier = "techkraft-db"
+  engine = "mysql" [cite: 104]
+  instance_class = "db.t3.medium" [cite: 109]
+  allocated_storage = 20 [cite: 110]
+  multi_az = true
+  storage_encrypted = true
+  manage_master_user_password = true
+  db_subnet_group_name = aws_db_subnet_group.main.name
+  vpc_security_group_ids = [aws_security_group.app_sg.id]
+  deletion_protection = true
   backup_retention_period = 7
-  skip_final_snapshot     = false
+  skip_final_snapshot = false
 }
